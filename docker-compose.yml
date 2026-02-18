@@ -1,0 +1,34 @@
+services:
+  # stdio transport (default) — for direct use with Claude Desktop/Code
+  unifi-mcp:
+    build: .
+    environment:
+      - UNIFI_API_KEY=${UNIFI_API_KEY}
+      - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
+      - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
+      - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
+    stdin_open: true
+
+  # SSE transport — for use with mcp-remote
+  # unifi-mcp-sse:
+  #   build: .
+  #   command: ["--transport", "sse"]
+  #   environment:
+  #     - UNIFI_API_KEY=${UNIFI_API_KEY}
+  #     - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
+  #     - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
+  #     - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
+  #   ports:
+  #     - "${MCP_PORT:-8000}:8000"
+
+  # Streamable HTTP transport — modern alternative to SSE
+  unifi-mcp-http:
+    build: .
+    command: ["--transport", "streamable-http"]
+    environment:
+      - UNIFI_API_KEY=${UNIFI_API_KEY}
+      - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
+      - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
+      - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
+    ports:
+      - "${MCP_PORT:-8000}:8000"
