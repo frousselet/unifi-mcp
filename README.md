@@ -1,6 +1,6 @@
 # UniFi MCP
 
-An [MCP](https://modelcontextprotocol.io) server that lets Claude interact with your UniFi network infrastructure. Supports both the **Site Manager API** (cloud) and the **Network API** (local console).
+An [MCP](https://modelcontextprotocol.io) server that lets Claude interact with your UniFi infrastructure. Supports the **Site Manager API** (cloud), the **Network API** (local console), and the **Protect API** (local console).
 
 ## Features
 
@@ -64,9 +64,50 @@ Full CRUD access to a local UniFi console (UDM, UCG, etc.):
 | `network_list_vpn_servers`          | List VPN servers                     |
 | `network_list_radius_profiles`      | List RADIUS profiles                 |
 
+### Protect API (local console)
+
+Access to UniFi Protect cameras, sensors, and devices on a local console:
+
+| Tool                              | Description                             |
+| --------------------------------- | --------------------------------------- |
+| **Info**                          |                                         |
+| `protect_info`                    | Application info and NVR status         |
+| **Cameras**                       |                                         |
+| `protect_list_cameras`            | List all cameras                        |
+| `protect_get_camera`              | Get camera details                      |
+| `protect_update_camera`           | Update camera settings                  |
+| `protect_get_camera_snapshot`     | Get a JPEG snapshot from a camera       |
+| **Lights**                        |                                         |
+| `protect_list_lights`             | List all lights                         |
+| `protect_get_light`               | Get light details                       |
+| `protect_update_light`            | Update light settings                   |
+| **Sensors**                       |                                         |
+| `protect_list_sensors`            | List all sensors                        |
+| `protect_get_sensor`              | Get sensor details                      |
+| `protect_update_sensor`           | Update sensor settings                  |
+| **Chimes**                        |                                         |
+| `protect_list_chimes`             | List all chimes                         |
+| `protect_get_chime`               | Get chime details                       |
+| `protect_update_chime`            | Update chime settings                   |
+| **Door Locks**                    |                                         |
+| `protect_list_doorlocks`          | List all door locks                     |
+| `protect_get_doorlock`            | Get door lock details                   |
+| `protect_update_doorlock`         | Update door lock (lock/unlock, timeout) |
+| **Events**                        |                                         |
+| `protect_list_events`             | List recent events (motion, detections) |
+| **Liveviews**                     |                                         |
+| `protect_list_liveviews`          | List all liveviews                      |
+| `protect_get_liveview`            | Get liveview details                    |
+| `protect_create_liveview`         | Create a liveview                       |
+| `protect_update_liveview`         | Update a liveview                       |
+| **Viewers**                       |                                         |
+| `protect_list_viewers`            | List all viewers (Viewport devices)     |
+| `protect_get_viewer`              | Get viewer details                      |
+| `protect_update_viewer`           | Update viewer settings                  |
+
 ## Prerequisites
 
-- **UniFi API key** -- generate at [unifi.ui.com](https://unifi.ui.com) > API section. The same key works for both Site Manager and Network APIs.
+- **UniFi API key** -- generate at [unifi.ui.com](https://unifi.ui.com) > API section. The same key works for Site Manager, Network, and Protect APIs.
 
 ## Quick start
 
@@ -79,10 +120,11 @@ docker build -t unifi-mcp .
 # Run with Site Manager API only
 docker run --rm -i -e UNIFI_API_KEY=your-key unifi-mcp
 
-# Run with both APIs (same key, just add the console host)
+# Run with all three APIs (same key, just add the console host)
 docker run --rm -i \
   -e UNIFI_API_KEY=your-key \
   -e UNIFI_NETWORK_HOST=192.168.1.1 \
+  -e UNIFI_PROTECT_HOST=192.168.1.1 \
   unifi-mcp
 ```
 
@@ -107,16 +149,19 @@ UNIFI_API_KEY=your-key uv run unifi-mcp
 
 ## Configuration
 
-| Variable                   | Required | Default                 | Description                                          |
-| -------------------------- | -------- | ----------------------- | ---------------------------------------------------- |
-| `UNIFI_API_KEY`            | Yes      | --                      | UniFi API key (Site Manager + Network fallback)      |
-| `UNIFI_API_BASE_URL`       | No       | `https://api.ui.com/v1` | Site Manager API base URL                            |
-| `UNIFI_API_TIMEOUT`        | No       | `30`                    | HTTP timeout in seconds                              |
-| `UNIFI_NETWORK_HOST`       | No       | --                      | Console IP/hostname (e.g. `192.168.1.1`)             |
-| `UNIFI_NETWORK_API_KEY`    | No       | `UNIFI_API_KEY`         | Network API key (if different from Site Manager key) |
-| `UNIFI_NETWORK_VERIFY_SSL` | No       | `false`                 | Verify SSL (consoles use self-signed certs)          |
+| Variable                    | Required | Default                 | Description                                          |
+| --------------------------- | -------- | ----------------------- | ---------------------------------------------------- |
+| `UNIFI_API_KEY`             | Yes      | --                      | UniFi API key (shared across all APIs)               |
+| `UNIFI_API_BASE_URL`        | No       | `https://api.ui.com/v1` | Site Manager API base URL                            |
+| `UNIFI_API_TIMEOUT`         | No       | `30`                    | HTTP timeout in seconds                              |
+| `UNIFI_NETWORK_HOST`        | No       | --                      | Console IP/hostname for Network API                  |
+| `UNIFI_NETWORK_API_KEY`     | No       | `UNIFI_API_KEY`         | Network API key (if different)                       |
+| `UNIFI_NETWORK_VERIFY_SSL`  | No       | `false`                 | Verify SSL for Network API                           |
+| `UNIFI_PROTECT_HOST`        | No       | --                      | Console IP/hostname for Protect API                  |
+| `UNIFI_PROTECT_API_KEY`     | No       | `UNIFI_API_KEY`         | Protect API key (if different)                       |
+| `UNIFI_PROTECT_VERIFY_SSL`  | No       | `false`                 | Verify SSL for Protect API                           |
 
-The Network API tools are only available when `UNIFI_NETWORK_HOST` is set. By default, `UNIFI_API_KEY` is used for both APIs. Set `UNIFI_NETWORK_API_KEY` if your console requires a separate key (generated in UniFi Network > Settings > Control Plane > Integrations).
+The Network API tools are only available when `UNIFI_NETWORK_HOST` is set. The Protect API tools are only available when `UNIFI_PROTECT_HOST` is set. By default, `UNIFI_API_KEY` is used for all APIs. Set `UNIFI_NETWORK_API_KEY` or `UNIFI_PROTECT_API_KEY` if a console requires a separate key.
 
 ## Claude integration
 
@@ -135,6 +180,7 @@ docker compose up unifi-mcp-sse
 docker run --rm -p 8000:8000 \
   -e UNIFI_API_KEY=your-key \
   -e UNIFI_NETWORK_HOST=192.168.1.1 \
+  -e UNIFI_PROTECT_HOST=192.168.1.1 \
   unifi-mcp --transport streamable-http
 ```
 
@@ -166,6 +212,7 @@ Alternatively, run the container directly via stdio:
         "run", "--rm", "-i",
         "-e", "UNIFI_API_KEY=your-key",
         "-e", "UNIFI_NETWORK_HOST=192.168.1.1",
+        "-e", "UNIFI_PROTECT_HOST=192.168.1.1",
         "unifi-mcp"
       ]
     }
@@ -185,7 +232,8 @@ Add to your MCP settings:
       "args": ["--directory", "/path/to/unifi-mcp", "run", "unifi-mcp"],
       "env": {
         "UNIFI_API_KEY": "your-key",
-        "UNIFI_NETWORK_HOST": "192.168.1.1"
+        "UNIFI_NETWORK_HOST": "192.168.1.1",
+        "UNIFI_PROTECT_HOST": "192.168.1.1"
       }
     }
   }
@@ -196,11 +244,13 @@ Add to your MCP settings:
 
 ```text
 src/unifi_mcp/
-  server.py             # MCP server and tool definitions
-  client.py             # Site Manager API client
-  formatting.py         # Site Manager response formatters
-  network_client.py     # Network API client (local console)
-  network_formatting.py # Network response formatters
+  server.py               # MCP server and tool definitions
+  client.py               # Site Manager API client
+  formatting.py           # Site Manager response formatters
+  network_client.py       # Network API client (local console)
+  network_formatting.py   # Network response formatters
+  protect_client.py       # Protect API client (local console)
+  protect_formatting.py   # Protect response formatters
 ```
 
 ## License

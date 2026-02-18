@@ -1,5 +1,6 @@
-"""UniFi MCP Server -- exposes UniFi Site Manager and Network APIs as MCP tools."""
+"""UniFi MCP Server -- exposes UniFi Site Manager, Network, and Protect APIs as MCP tools."""
 
+import base64
 import logging
 import os
 import sys
@@ -44,6 +45,27 @@ from unifi_mcp.network_formatting import (
     format_network_wifi,
     format_network_wifi_detail,
 )
+from unifi_mcp.protect_client import ProtectApiError, ProtectClient
+from unifi_mcp.protect_formatting import (
+    format_protect_app_info,
+    format_protect_camera_detail,
+    format_protect_cameras,
+    format_protect_chime_detail,
+    format_protect_chimes,
+    format_protect_crud_result,
+    format_protect_doorlock_detail,
+    format_protect_doorlocks,
+    format_protect_events,
+    format_protect_light_detail,
+    format_protect_lights,
+    format_protect_liveview_detail,
+    format_protect_liveviews,
+    format_protect_nvr,
+    format_protect_sensor_detail,
+    format_protect_sensors,
+    format_protect_viewer_detail,
+    format_protect_viewers,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +81,7 @@ class AppContext:
 
     client: UniFiClient
     network_client: NetworkClient | None
+    protect_client: ProtectClient | None
 
 
 @asynccontextmanager
@@ -77,24 +100,42 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     else:
         logger.info("Network API client not configured (UNIFI_NETWORK_HOST not set)")
 
+    protect_client: ProtectClient | None = None
+    if os.environ.get("UNIFI_PROTECT_HOST"):
+        protect_client = ProtectClient()
+        logger.info(
+            "Protect API client initialized (host: %s)",
+            os.environ["UNIFI_PROTECT_HOST"],
+        )
+    else:
+        logger.info("Protect API client not configured (UNIFI_PROTECT_HOST not set)")
+
     try:
-        yield AppContext(client=client, network_client=network_client)
+        yield AppContext(
+            client=client,
+            network_client=network_client,
+            protect_client=protect_client,
+        )
     finally:
         await client.close()
         if network_client:
             await network_client.close()
+        if protect_client:
+            await protect_client.close()
         logger.info("API clients closed")
 
 
 mcp = FastMCP(
     "unifi",
     instructions=(
-        "This server provides access to UniFi network infrastructure via two APIs:\n"
+        "This server provides access to UniFi infrastructure via three APIs:\n"
         "1. **Site Manager API** (cloud): list_hosts, get_host, list_sites, list_devices, "
         "get_isp_metrics, query_isp_metrics, get_sdwan_config\n"
         "2. **Network API** (local console): network_* tools for devices, clients, "
-        "networks, WiFi, firewall, DNS, vouchers, and more\n\n"
-        "Start with list_hosts or network_info to discover your infrastructure."
+        "networks, WiFi, firewall, DNS, vouchers, and more\n"
+        "3. **Protect API** (local console): protect_* tools for cameras, lights, sensors, "
+        "chimes, door locks, events, liveviews, viewers, and NVR info\n\n"
+        "Start with list_hosts, network_info, or protect_info to discover your infrastructure."
     ),
     lifespan=app_lifespan,
 )
@@ -123,6 +164,22 @@ def _get_network_client() -> NetworkClient:
         raise NetworkApiError(
             0,
             "Network API not configured. Set UNIFI_NETWORK_HOST "
+            "environment variable to your console IP/hostname.",
+        )
+    return client
+
+
+def _protect_error_response(e: ProtectApiError) -> str:
+    return f"Error {e.status_code}: {e.message}"
+
+
+def _get_protect_client() -> ProtectClient:
+    """Get the Protect API client from context, or raise a clear error."""
+    client: ProtectClient | None = _get_app_context().protect_client
+    if client is None:
+        raise ProtectApiError(
+            0,
+            "Protect API not configured. Set UNIFI_PROTECT_HOST "
             "environment variable to your console IP/hostname.",
         )
     return client
@@ -984,6 +1041,425 @@ async def network_list_radius_profiles(
         return format_network_radius_profiles(data)
     except NetworkApiError as e:
         return _network_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Info
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_info() -> str:
+    """Get UniFi Protect application info and NVR system status.
+
+    Returns Protect application metadata and NVR details including
+    firmware version, storage info, and recording settings.
+    Use this first to verify Protect connectivity.
+    """
+    try:
+        client = _get_protect_client()
+        info = await client.get_app_info()
+        nvr = await client.get_nvr()
+        parts = [format_protect_app_info(info), "", format_protect_nvr(nvr)]
+        return "\n".join(parts)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Cameras
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_cameras() -> str:
+    """List all cameras managed by UniFi Protect.
+
+    Returns camera names, models, connection state, recording status,
+    and firmware versions. Use this to discover camera IDs.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.list_cameras()
+        return format_protect_cameras(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_camera(camera_id: str) -> str:
+    """Get detailed information about a specific Protect camera.
+
+    Args:
+        camera_id: The camera ID (get from protect_list_cameras).
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_camera(camera_id)
+        return format_protect_camera_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_camera(camera_id: str, data: dict) -> str:
+    """Update a Protect camera's settings (name, OSD, LED, etc.).
+
+    Args:
+        camera_id: The camera ID.
+        data: Fields to update (e.g. {"name": "Front Door"}).
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_camera(camera_id, data)
+        return format_protect_crud_result(result, "Camera updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_camera_snapshot(camera_id: str) -> str:
+    """Get a JPEG snapshot from a Protect camera.
+
+    Returns the snapshot as a base64-encoded JPEG image.
+
+    Args:
+        camera_id: The camera ID.
+    """
+    try:
+        client = _get_protect_client()
+        image_bytes = await client.get_camera_snapshot(camera_id)
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        return f"![Camera snapshot](data:image/jpeg;base64,{b64})"
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Lights
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_lights() -> str:
+    """List all lights managed by UniFi Protect.
+
+    Returns light names, models, and motion detection state.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.list_lights()
+        return format_protect_lights(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_light(light_id: str) -> str:
+    """Get detailed information about a specific Protect light.
+
+    Args:
+        light_id: The light ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_light(light_id)
+        return format_protect_light_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_light(light_id: str, data: dict) -> str:
+    """Update a Protect light's settings.
+
+    Args:
+        light_id: The light ID.
+        data: Fields to update.
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_light(light_id, data)
+        return format_protect_crud_result(result, "Light updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Sensors
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_sensors() -> str:
+    """List all sensors managed by UniFi Protect.
+
+    Returns sensor names, models, and current readings (temperature,
+    humidity, light level).
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.list_sensors()
+        return format_protect_sensors(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_sensor(sensor_id: str) -> str:
+    """Get detailed information about a specific Protect sensor.
+
+    Args:
+        sensor_id: The sensor ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_sensor(sensor_id)
+        return format_protect_sensor_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_sensor(sensor_id: str, data: dict) -> str:
+    """Update a Protect sensor's settings.
+
+    Args:
+        sensor_id: The sensor ID.
+        data: Fields to update.
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_sensor(sensor_id, data)
+        return format_protect_crud_result(result, "Sensor updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Chimes
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_chimes() -> str:
+    """List all chimes managed by UniFi Protect."""
+    try:
+        client = _get_protect_client()
+        data = await client.list_chimes()
+        return format_protect_chimes(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_chime(chime_id: str) -> str:
+    """Get detailed information about a specific Protect chime.
+
+    Args:
+        chime_id: The chime ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_chime(chime_id)
+        return format_protect_chime_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_chime(chime_id: str, data: dict) -> str:
+    """Update a Protect chime's settings.
+
+    Args:
+        chime_id: The chime ID.
+        data: Fields to update.
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_chime(chime_id, data)
+        return format_protect_crud_result(result, "Chime updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Door Locks
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_doorlocks() -> str:
+    """List all door locks managed by UniFi Protect.
+
+    Returns lock names, models, lock status, and auto-lock timeout.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.list_doorlocks()
+        return format_protect_doorlocks(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_doorlock(doorlock_id: str) -> str:
+    """Get detailed information about a specific Protect door lock.
+
+    Args:
+        doorlock_id: The door lock ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_doorlock(doorlock_id)
+        return format_protect_doorlock_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_doorlock(doorlock_id: str, data: dict) -> str:
+    """Update a Protect door lock's settings (lock/unlock, auto-lock timeout).
+
+    Args:
+        doorlock_id: The door lock ID.
+        data: Fields to update (e.g. {"lockStatus": "locked", "autoLockTimeoutSec": 30}).
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_doorlock(doorlock_id, data)
+        return format_protect_crud_result(result, "Door lock updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Events
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_events() -> str:
+    """List recent Protect events (motion, smart detections, etc.).
+
+    Returns up to 10,000 events. Output is truncated to the 50 most
+    recent for readability.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.list_events()
+        return format_protect_events(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Liveviews
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_liveviews() -> str:
+    """List all liveviews configured in UniFi Protect."""
+    try:
+        client = _get_protect_client()
+        data = await client.list_liveviews()
+        return format_protect_liveviews(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_liveview(liveview_id: str) -> str:
+    """Get detailed information about a specific Protect liveview.
+
+    Args:
+        liveview_id: The liveview ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_liveview(liveview_id)
+        return format_protect_liveview_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_create_liveview(data: dict) -> str:
+    """Create a new liveview in UniFi Protect.
+
+    Args:
+        data: Liveview configuration (name, slots, etc.).
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.create_liveview(data)
+        return format_protect_crud_result(result, "Liveview created")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_liveview(liveview_id: str, data: dict) -> str:
+    """Update an existing liveview in UniFi Protect.
+
+    Args:
+        liveview_id: The liveview ID.
+        data: Updated liveview configuration.
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_liveview(liveview_id, data)
+        return format_protect_crud_result(result, "Liveview updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Protect API Tools — Viewers
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protect_list_viewers() -> str:
+    """List all viewers (Viewport devices) in UniFi Protect."""
+    try:
+        client = _get_protect_client()
+        data = await client.list_viewers()
+        return format_protect_viewers(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_get_viewer(viewer_id: str) -> str:
+    """Get detailed information about a specific Protect viewer.
+
+    Args:
+        viewer_id: The viewer ID.
+    """
+    try:
+        client = _get_protect_client()
+        data = await client.get_viewer(viewer_id)
+        return format_protect_viewer_detail(data)
+    except ProtectApiError as e:
+        return _protect_error_response(e)
+
+
+@mcp.tool()
+async def protect_update_viewer(viewer_id: str, data: dict) -> str:
+    """Update a Protect viewer's settings.
+
+    Args:
+        viewer_id: The viewer ID.
+        data: Fields to update.
+    """
+    try:
+        client = _get_protect_client()
+        result = await client.update_viewer(viewer_id, data)
+        return format_protect_crud_result(result, "Viewer updated")
+    except ProtectApiError as e:
+        return _protect_error_response(e)
 
 
 # ---------------------------------------------------------------------------
