@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from unifi_mcp.client import UniFiApiError, UniFiClient
 from unifi_mcp.formatting import (
@@ -1493,6 +1494,14 @@ def main():
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port
+
+    # When binding to all interfaces, disable DNS rebinding protection
+    # so reverse proxies with custom Host headers work correctly.
+    if args.host == "0.0.0.0":
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+
     mcp.run(transport=args.transport)
 
 
