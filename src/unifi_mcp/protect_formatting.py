@@ -152,31 +152,6 @@ def format_protect_chime_detail(data: dict[str, Any]) -> str:
     return _json_detail(data)
 
 
-# --- Door Locks ---
-
-
-def format_protect_doorlocks(data: Any) -> str:
-    items = data if isinstance(data, list) else data.get("data", [])
-    if not items:
-        return "No door locks found."
-
-    lines: list[str] = [f"Found {len(items)} door lock(s):\n"]
-    for d in items:
-        name = d.get("name", "Unnamed")
-        state = d.get("state", "unknown")
-        lines.append(f"- **{name}** [{state}] (ID: `{d.get('id', 'N/A')}`)")
-        lines.append(f"  Model: {d.get('type', d.get('model', 'N/A'))}")
-        lines.append(f"  Lock status: {d.get('lockStatus', 'N/A')}")
-        lines.append(f"  Auto-lock timeout: {d.get('autoLockTimeoutSec', 'N/A')}s")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def format_protect_doorlock_detail(data: dict[str, Any]) -> str:
-    return _json_detail(data)
-
-
 # --- Events ---
 
 
@@ -255,6 +230,139 @@ def format_protect_viewers(data: Any) -> str:
 
 def format_protect_viewer_detail(data: dict[str, Any]) -> str:
     return _json_detail(data)
+
+
+# --- Generic device lists ---
+
+
+def _format_simple_devices(data: Any, singular: str, extra: Any = None) -> str:
+    """Format a list of Protect devices sharing the id/name/state/modelKey shape.
+
+    ``extra`` is an optional callable(item) -> list[str] of extra bullet lines.
+    """
+    items = data if isinstance(data, list) else data.get("data", [])
+    if not items:
+        return f"No {singular}s found."
+
+    lines: list[str] = [f"Found {len(items)} {singular}(s):\n"]
+    for it in items:
+        name = it.get("name", "Unnamed")
+        state = it.get("state", "unknown")
+        lines.append(f"- **{name}** [{state}] (ID: `{it.get('id', 'N/A')}`)")
+        model = it.get("modelKey") or it.get("type") or it.get("model")
+        if model:
+            lines.append(f"  Model: {model}")
+        mac = it.get("mac")
+        if mac:
+            lines.append(f"  MAC: {mac}")
+        if extra:
+            lines.extend(f"  {line}" for line in extra(it))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def format_protect_sirens(data: Any) -> str:
+    def extra(s: dict[str, Any]) -> list[str]:
+        status = s.get("sirenStatus", {})
+        return [f"Active: {status.get('isActive', 'N/A')} | Volume: {s.get('volume', 'N/A')}"]
+
+    return _format_simple_devices(data, "siren", extra)
+
+
+def format_protect_speakers(data: Any) -> str:
+    def extra(s: dict[str, Any]) -> list[str]:
+        st = s.get("speakerState", {})
+        return [f"Status: {st.get('status', 'N/A')} | Volume: {s.get('volume', 'N/A')}"]
+
+    return _format_simple_devices(data, "speaker", extra)
+
+
+def format_protect_fobs(data: Any) -> str:
+    def extra(f: dict[str, Any]) -> list[str]:
+        return [f"Away state: {f.get('awayState', 'N/A')}"]
+
+    return _format_simple_devices(data, "fob", extra)
+
+
+def format_protect_relays(data: Any) -> str:
+    def extra(r: dict[str, Any]) -> list[str]:
+        outputs = r.get("outputs", [])
+        states = ", ".join(
+            f"#{o.get('id')}={o.get('state')}" for o in outputs
+        )
+        return [f"Outputs: {states}"] if states else []
+
+    return _format_simple_devices(data, "relay", extra)
+
+
+def format_protect_bridges(data: Any) -> str:
+    def extra(b: dict[str, Any]) -> list[str]:
+        clients = b.get("clients", [])
+        return [f"Clients: {len(clients)}/{b.get('maxClients', 'N/A')}"]
+
+    return _format_simple_devices(data, "bridge", extra)
+
+
+def format_protect_link_stations(data: Any) -> str:
+    def extra(ls: dict[str, Any]) -> list[str]:
+        return [f"Alarm hub: {ls.get('isAlarmHub', 'N/A')}"]
+
+    return _format_simple_devices(data, "link station", extra)
+
+
+def format_protect_alarm_hubs(data: Any) -> str:
+    def extra(h: dict[str, Any]) -> list[str]:
+        hub = h.get("alarmHub", {})
+        return [f"Armed: {hub.get('armed', 'N/A')}"] if hub else []
+
+    return _format_simple_devices(data, "alarm hub", extra)
+
+
+def format_protect_device_detail(data: dict[str, Any]) -> str:
+    return _json_detail(data)
+
+
+# --- Arm profiles ---
+
+
+def format_protect_arm_profiles(data: Any) -> str:
+    items = data if isinstance(data, list) else data.get("data", [])
+    if not items:
+        return "No arm profiles found."
+
+    lines: list[str] = [f"Found {len(items)} arm profile(s):\n"]
+    for p in items:
+        lines.append(f"- **{p.get('name', 'Unnamed')}** (ID: `{p.get('id', 'N/A')}`)")
+        lines.append(f"  Record everything: {p.get('recordEverything', 'N/A')}")
+        lines.append(f"  Activation delay: {p.get('activationDelay', 'N/A')}ms")
+        lines.append(f"  Schedules: {len(p.get('schedules', []))}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# --- Users ---
+
+
+def format_protect_users(data: Any) -> str:
+    items = data if isinstance(data, list) else data.get("data", [])
+    if not items:
+        return "No users found."
+
+    lines: list[str] = [f"Found {len(items)} user(s):\n"]
+    for u in items:
+        name = u.get("name") or u.get("fullName", "Unnamed")
+        lines.append(f"- **{name}** (ID: `{u.get('id', 'N/A')}`)")
+        email = u.get("email")
+        if email:
+            lines.append(f"  Email: {email}")
+        status = u.get("status")
+        if status:
+            lines.append(f"  Status: {status}")
+        ulp = u.get("ucoreUserId")
+        if ulp:
+            lines.append(f"  Identity user ID: `{ulp}`")
+        lines.append("")
+    return "\n".join(lines)
 
 
 # --- CRUD result ---
