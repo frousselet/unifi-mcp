@@ -188,9 +188,11 @@ def _build_mcp() -> FastMCP:
         REGISTRY = BundleRegistry(STORE)
         OAUTH_PROVIDER = UniFiOAuthProvider(STORE)
 
-        public_url = os.environ.get("UNIFI_PUBLIC_URL", "http://localhost:8000").rstrip(
-            "/"
-        )
+        # Startup fallback only — the real metadata is served request-derived by
+        # the web app. Treat an empty env value as unset (compose passes "").
+        public_url = (
+            os.environ.get("UNIFI_PUBLIC_URL") or "http://localhost:8000"
+        ).rstrip("/")
         kwargs["auth_server_provider"] = OAUTH_PROVIDER
         kwargs["auth"] = AuthSettings(
             issuer_url=public_url,  # type: ignore[arg-type]
