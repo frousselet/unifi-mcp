@@ -258,17 +258,46 @@ def _dashboard_page(email: str, tenants: list[dict], error: str = "") -> str:
 
 <h2>Add a connection</h2>
 <p class="muted">Each connection maps one UniFi API key to an MCP endpoint for
-Claude. Create a key at <a href="https://unifi.ui.com">unifi.ui.com → API</a>.</p>
+Claude. Create a key at <a href="https://unifi.ui.com">unifi.ui.com → API</a>.
+The connection can reach <b>every console your account owns</b>; pick a default
+below (tools also accept a <code>console_id</code> to target any other).</p>
+<p id="err" class="err"></p>
 <form method="post" action="/onboard" class="card">
   {gate}
   <label>UniFi API key <small>(required)</small>
-    <input name="api_key" required autocomplete="off" placeholder="0HMN…XvWC"></label>
-  <label>Console ID <small>(optional — enables Network &amp; Protect tools)</small>
-    <input name="console_id" autocomplete="off" placeholder="900A6F…:123456789"></label>
+    <input name="api_key" id="api_key" required autocomplete="off" placeholder="0HMN…XvWC"></label>
+  <label>Default console <small>(optional — enables Network &amp; Protect tools)</small>
+    <div style="display:flex;gap:.5rem;align-items:flex-end">
+      <select name="console_id" id="console_id" style="flex:1;padding:.6rem;border-radius:6px;
+        border:1px solid #8888;background:transparent;color:inherit;font-size:1rem">
+        <option value="">(load consoles →)</option>
+      </select>
+      <button type="button" onclick="loadConsoles().catch(e=>setErr(e.message))"
+        style="margin:0;background:#555">Load consoles</button>
+    </div></label>
   <label>Label <small>(optional)</small>
     <input name="label" autocomplete="off" placeholder="Home network"></label>
   <button type="submit">Create connection</button>
 </form>
+<script>
+function setErr(m){{const e=document.getElementById('err');if(e)e.textContent=m||'';}}
+async function loadConsoles(){{
+  setErr('');
+  const k=document.getElementById('api_key').value.trim();
+  if(!k){{setErr('Enter your API key first.');return;}}
+  const r=await fetch('/hosts',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{api_key:k}})}});
+  const j=await r.json();
+  if(!r.ok){{setErr(j.error||'Failed to load consoles');return;}}
+  const sel=document.getElementById('console_id');sel.innerHTML='';
+  const none=document.createElement('option');none.value='';
+  none.textContent='(none — Site Manager & Mobility only)';sel.appendChild(none);
+  for(const h of j.consoles){{const o=document.createElement('option');o.value=h.id;
+    o.textContent=(h.name||h.id)+(h.type?(' — '+h.type):'');sel.appendChild(o);}}
+  if(j.consoles.length===1)sel.value=j.consoles[0].id;
+  if(!j.consoles.length)setErr('No consoles found for this account.');
+}}
+</script>
 """
     return _page(body)
 
@@ -486,6 +515,36 @@ async def onboard_post(request: Request) -> HTMLResponse:
     return HTMLResponse(
         _result_page(_base_url(request), tenant.client_id, tenant.client_secret)
     )
+
+
+@mcp.custom_route("/hosts", methods=["POST"])
+async def list_account_hosts(request: Request) -> JSONResponse:
+    """List the consoles an API key can reach (for the onboarding picker)."""
+    if not _uid(request):
+        return JSONResponse({"error": "sign in first"}, status_code=401)
+    api_key = str((await request.json()).get("api_key", "")).strip()
+    if not api_key:
+        return JSONResponse({"error": "API key required"}, status_code=400)
+
+    from unifi_mcp.client import UniFiApiError, UniFiClient
+
+    client = UniFiClient(api_key=api_key)
+    try:
+        data = await client.list_hosts(page_size=200)
+    except UniFiApiError as e:
+        return JSONResponse(
+            {"error": f"UniFi API error {e.status_code}: {e.message}"},
+            status_code=400,
+        )
+    finally:
+        await client.close()
+
+    consoles = []
+    for h in data.get("data", []):
+        state = h.get("reportedState") or {}
+        name = state.get("name") or state.get("hostname") or h.get("ipAddress") or ""
+        consoles.append({"id": h.get("id"), "name": name, "type": h.get("type", "")})
+    return JSONResponse({"consoles": consoles})
 
 
 @mcp.custom_route("/connections/delete", methods=["POST"])

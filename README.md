@@ -265,6 +265,8 @@ Behind HTTPS in production (passkeys require it), point a reverse proxy at the c
 
 **Per-connection auth:** each connection is a confidential OAuth client. Claude runs the authorization-code + PKCE flow with the issued id/secret and receives an access token bound to that connection; tool calls resolve its UniFi credentials from the token.
 
+**Consoles:** onboarding loads the account's consoles (via `list_hosts`) so you can pick a **default**. A single connection can reach **every console the account owns** — each `network_*` / `protect_*` tool takes an optional `console_id` (discover IDs with `list_hosts`); omit it to use the default.
+
 **Zero-config by default:**
 - The Fernet encryption key is auto-generated and **persisted** to the data volume (`secret.key`) on first run — set `UNIFI_SECRET_KEY` only to supply your own.
 - The public base URL (OAuth issuer, passkey origin, MCP URL shown to users) is **auto-detected** from each request (honoring `X-Forwarded-Proto/Host`). Set `UNIFI_PUBLIC_URL` to pin it.

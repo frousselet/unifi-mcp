@@ -86,63 +86,87 @@ def _load_fernet(key_path: Path) -> Fernet:
 
 @dataclass
 class ClientBundle:
-    """The set of UniFi API clients used to serve one caller."""
+    """The UniFi API clients used to serve one caller.
+
+    Site Manager and Mobility are account-level (one client each). Network and
+    Protect target a specific console, so their clients are built **on demand
+    per console id** and cached — the same account key can therefore reach every
+    console the account owns (the cloud connector enforces ownership). A default
+    console id lets tools work without specifying one; passing ``console_id``
+    to a tool overrides it.
+    """
 
     site_manager: UniFiClient
     mobility: MobilityClient
-    network: NetworkClient | None
-    protect: ProtectClient | None
+    api_key: str
+    default_console_id: str = ""
+    network_host: str = ""
+    protect_host: str = ""
+    timeout: float | None = None
+    _net: dict[str, NetworkClient] = field(default_factory=dict)
+    _prot: dict[str, ProtectClient] = field(default_factory=dict)
+
+    def network_for(self, console_id: str | None = None) -> NetworkClient | None:
+        if self.network_host:
+            key = "__host__"
+            if key not in self._net:
+                self._net[key] = NetworkClient(
+                    host=self.network_host, api_key=self.api_key, timeout=self.timeout
+                )
+            return self._net[key]
+        cid = console_id or self.default_console_id
+        if not cid:
+            return None
+        if cid not in self._net:
+            self._net[cid] = NetworkClient(
+                console_id=cid, api_key=self.api_key, timeout=self.timeout
+            )
+        return self._net[cid]
+
+    def protect_for(self, console_id: str | None = None) -> ProtectClient | None:
+        if self.protect_host:
+            key = "__host__"
+            if key not in self._prot:
+                self._prot[key] = ProtectClient(
+                    host=self.protect_host, api_key=self.api_key, timeout=self.timeout
+                )
+            return self._prot[key]
+        cid = console_id or self.default_console_id
+        if not cid:
+            return None
+        if cid not in self._prot:
+            self._prot[cid] = ProtectClient(
+                console_id=cid, api_key=self.api_key, timeout=self.timeout
+            )
+        return self._prot[cid]
 
     async def aclose(self) -> None:
         await self.site_manager.close()
         await self.mobility.close()
-        if self.network:
-            await self.network.close()
-        if self.protect:
-            await self.protect.close()
+        for c in self._net.values():
+            await c.close()
+        for c in self._prot.values():
+            await c.close()
 
     @classmethod
     def from_config(
         cls,
         api_key: str,
         *,
-        network_console_id: str | None = None,
-        protect_console_id: str | None = None,
+        default_console_id: str | None = None,
         network_host: str | None = None,
         protect_host: str | None = None,
         timeout: float | None = None,
     ) -> "ClientBundle":
-        """Build a bundle from explicit credentials (no env reads for identity).
-
-        Network/Protect clients are only created when a console ID or host is
-        supplied for them; otherwise those tools are unavailable for the tenant.
-        """
-        site_manager = UniFiClient(api_key=api_key, timeout=timeout)
-        mobility = MobilityClient(api_key=api_key, timeout=timeout)
-
-        network: NetworkClient | None = None
-        if network_console_id or network_host:
-            network = NetworkClient(
-                host=network_host or None,
-                console_id=network_console_id or None,
-                api_key=api_key,
-                timeout=timeout,
-            )
-
-        protect: ProtectClient | None = None
-        if protect_console_id or protect_host:
-            protect = ProtectClient(
-                host=protect_host or None,
-                console_id=protect_console_id or None,
-                api_key=api_key,
-                timeout=timeout,
-            )
-
+        """Build a bundle from explicit credentials (no env reads for identity)."""
         return cls(
-            site_manager=site_manager,
-            mobility=mobility,
-            network=network,
-            protect=protect,
+            site_manager=UniFiClient(api_key=api_key, timeout=timeout),
+            mobility=MobilityClient(api_key=api_key, timeout=timeout),
+            api_key=api_key,
+            default_console_id=default_console_id or "",
+            network_host=network_host or "",
+            protect_host=protect_host or "",
+            timeout=timeout,
         )
 
 
@@ -477,8 +501,7 @@ class BundleRegistry:
             return None
         bundle = ClientBundle.from_config(
             api_key=tenant.api_key,
-            network_console_id=tenant.network_console_id or None,
-            protect_console_id=tenant.protect_console_id or None,
+            default_console_id=tenant.network_console_id or None,
         )
         self._bundles[client_id] = bundle
         return bundle
