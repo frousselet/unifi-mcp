@@ -239,48 +239,47 @@ UNIFI_API_KEY=your-key uv run unifi-mcp --transport streamable-http --host 0.0.0
 
 When both a local host and a console ID are set for an application, **local mode wins**. By default `UNIFI_API_KEY` is used everywhere; set a per-API key only if a console needs a different one.
 
-## Multi-tenant onboarding (self-service SaaS mode)
+## Multi-user web GUI (self-service SaaS mode)
 
-Instead of one set of credentials, you can run a hosted service where **each user registers their own UniFi key through a web page** and receives an MCP URL + OAuth client id/secret to paste into Claude's custom-connector dialog.
+The **default** `docker compose up` runs a hosted, multi-user service — **no configuration required**. Users self-register with a passkey and manage their own MCP connections through a web page; each connection maps one UniFi API key to the shared, OAuth-protected `/mcp` endpoint for Claude.
 
 ```bash
-cp .env.example .env
-# set at least:
-#   UNIFI_PUBLIC_URL=https://unifi.example.com   (HTTPS in production)
-#   UNIFI_SECRET_KEY=<Fernet key>                (see below)
-python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"  # -> UNIFI_SECRET_KEY
-
-docker compose --profile multitenant up -d --build
+docker compose up -d --build
+# open http://<host>:8000/  → register a passkey → add a connection
 ```
 
-This serves, on one port:
+Behind HTTPS in production (passkeys require it), point a reverse proxy at the container and optionally set `UNIFI_PUBLIC_URL`.
+
+**Endpoints served on one port:**
 
 | Path | Purpose |
 | ---- | ------- |
-| `GET /setup` | First-run: register the first admin **passkey** |
-| `GET /login` | Sign in with a passkey |
-| `GET /` | Onboarding form (admin only) |
-| `POST /onboard` | Creates a tenant → returns MCP URL + OAuth `client_id` / `client_secret` |
-| `GET /admin` | List / delete tenant connections |
-| `/mcp` | The shared, OAuth-protected MCP endpoint |
+| `/register`, `/login` | Passwordless accounts (WebAuthn **passkeys only**) |
+| `GET /` | Your connections + a form to add one |
+| `POST /onboard` | Create a connection → MCP URL + OAuth `client_id` / `client_secret` |
+| `POST /connections/delete` | Revoke one of your connections |
+| `/mcp` | Shared, OAuth-protected MCP endpoint |
 | `/authorize`, `/token`, `/.well-known/oauth-*` | OAuth 2.1 authorization server |
 
-**Admin auth is passwordless (WebAuthn passkeys only).** There is no default account: the first visit invites you to create one (Touch ID / Windows Hello / security key / phone). Add more passkeys later from the admin area.
+**Accounts:** passwordless, WebAuthn passkeys only — no default account. Anyone can self-register (optionally gate with `UNIFI_ONBOARD_CODE`). **Each user owns as many connections as they want and can revoke any of them** at any time (revoking also invalidates that connection's OAuth tokens).
 
-**How tenant auth works:** each tenant gets a confidential OAuth client. Claude runs the authorization-code + PKCE flow with the issued id/secret and receives an access token bound to that tenant; tool calls resolve the tenant's UniFi credentials from the token.
+**Per-connection auth:** each connection is a confidential OAuth client. Claude runs the authorization-code + PKCE flow with the issued id/secret and receives an access token bound to that connection; tool calls resolve its UniFi credentials from the token.
 
-**Data at rest:** stored in a JSON file (`UNIFI_TENANT_STORE`, on the `unifi-tenants` volume). Secrets are protected:
-- UniFi API keys and OAuth client secrets are **encrypted** with Fernet (`UNIFI_SECRET_KEY`).
-- OAuth access/refresh tokens and authorization codes are stored **hashed** (SHA-256) — the raw bearer secrets are never written to disk.
-- Passkey public keys and console IDs are stored as non-secret metadata.
+**Zero-config by default:**
+- The Fernet encryption key is auto-generated and **persisted** to the data volume (`secret.key`) on first run — set `UNIFI_SECRET_KEY` only to supply your own.
+- The public base URL (OAuth issuer, passkey origin, MCP URL shown to users) is **auto-detected** from each request (honoring `X-Forwarded-Proto/Host`). Set `UNIFI_PUBLIC_URL` to pin it.
+
+**Data at rest** (JSON on the `unifi-data` volume):
+- UniFi API keys and OAuth client secrets are **encrypted** (Fernet).
+- OAuth access/refresh tokens and authorization codes are stored **hashed** (SHA-256) — raw bearer secrets are never written to disk.
+- Passkey public keys, ownership, and console IDs are non-secret metadata.
 
 **Security notes:**
-- Passkeys **require HTTPS** (except on `localhost`) and bind to `UNIFI_PUBLIC_URL`'s hostname — set it to the real public origin and terminate TLS in front.
-- Onboarding is admin-gated; optionally also set `UNIFI_ONBOARD_CODE`.
+- Passkeys **require HTTPS** (except `localhost`) — terminate TLS in front.
+- Keep the `unifi-data` volume (and `secret.key` / `UNIFI_SECRET_KEY`) backed up, or stored data becomes unreadable.
 - Redirect URIs are restricted to Claude's web callbacks by default; override with `UNIFI_OAUTH_REDIRECT_URIS`.
-- Keep `UNIFI_SECRET_KEY` stable and backed up, or stored tenant data becomes unreadable.
 
-Configuration variables for this mode: `UNIFI_MULTITENANT`, `UNIFI_PUBLIC_URL`, `UNIFI_SECRET_KEY`, `UNIFI_TENANT_STORE`, `UNIFI_RP_NAME`, `UNIFI_ONBOARD_CODE`, `UNIFI_OAUTH_REDIRECT_URIS` (see `.env.example`).
+All variables are optional: `UNIFI_PUBLIC_URL`, `UNIFI_SECRET_KEY`, `UNIFI_TENANT_STORE`, `UNIFI_RP_NAME`, `UNIFI_ONBOARD_CODE`, `UNIFI_OAUTH_REDIRECT_URIS` (see `.env.example`).
 
 ## Claude integration
 

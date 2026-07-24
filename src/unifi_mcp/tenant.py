@@ -45,29 +45,38 @@ logger = logging.getLogger("unifi-mcp.tenant")
 # ---------------------------------------------------------------------------
 
 
-def _load_fernet() -> Fernet:
-    """Build the Fernet cipher from ``UNIFI_SECRET_KEY``.
+def _load_fernet(key_path: Path) -> Fernet:
+    """Build the Fernet cipher used to encrypt secrets at rest.
 
-    The value may be a urlsafe-base64 32-byte Fernet key, or any passphrase
-    (which is hashed to a key). If unset, a random key is generated and logged
-    once — set it explicitly in production so data survives restarts.
+    Resolution order:
+    1. ``UNIFI_SECRET_KEY`` env — a Fernet key, or any passphrase (hashed).
+    2. A key file persisted next to the store (auto-generated on first run so
+       ``docker compose up`` needs no configuration yet survives restarts).
     """
     raw = os.environ.get("UNIFI_SECRET_KEY", "")
-    if not raw:
-        key = Fernet.generate_key()
-        logger.warning(
-            "UNIFI_SECRET_KEY not set — generated an ephemeral key. "
-            "Stored tenant data will be UNREADABLE after restart. "
-            "Set UNIFI_SECRET_KEY=%s to persist it.",
-            key.decode(),
-        )
-        return Fernet(key)
+    if raw:
+        try:
+            return Fernet(raw)
+        except (ValueError, TypeError):
+            digest = hashlib.sha256(raw.encode()).digest()
+            return Fernet(base64.urlsafe_b64encode(digest))
+
+    # No env key: persist a generated one next to the store.
+    if key_path.exists():
+        return Fernet(key_path.read_bytes().strip())
+    key = Fernet.generate_key()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key)
     try:
-        return Fernet(raw)
-    except (ValueError, TypeError):
-        # Not a valid Fernet key — derive one from the passphrase.
-        digest = hashlib.sha256(raw.encode()).digest()
-        return Fernet(base64.urlsafe_b64encode(digest))
+        key_path.chmod(0o600)
+    except OSError:
+        pass
+    logger.info(
+        "Generated and persisted an encryption key at %s. Keep this file (and "
+        "the data volume) safe; set UNIFI_SECRET_KEY to override.",
+        key_path,
+    )
+    return Fernet(key)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +157,7 @@ class Tenant:
     client_id: str
     client_secret: str  # decrypted in memory
     api_key: str  # decrypted in memory
+    owner_id: str = ""
     label: str = ""
     network_console_id: str = ""
     protect_console_id: str = ""
@@ -186,7 +196,7 @@ class TenantStore:
             or os.environ.get("UNIFI_TENANT_STORE", "")
             or "/data/unifi_tenants.json"
         )
-        self._fernet = _load_fernet()
+        self._fernet = _load_fernet(self._path.with_name("secret.key"))
         self._lock = asyncio.Lock()
         self._data: dict[str, Any] = {
             "tenants": {},  # tenant_id -> record dict
@@ -238,6 +248,7 @@ class TenantStore:
         self,
         api_key: str,
         *,
+        owner_id: str = "",
         label: str = "",
         network_console_id: str = "",
         protect_console_id: str = "",
@@ -251,6 +262,7 @@ class TenantStore:
                 "client_id": client_id,
                 "client_secret_enc": self._enc(client_secret),
                 "api_key_enc": self._enc(api_key),
+                "owner_id": owner_id,
                 "label": label,
                 "network_console_id": network_console_id,
                 "protect_console_id": protect_console_id,
@@ -266,6 +278,7 @@ class TenantStore:
             client_id=record["client_id"],
             client_secret=self._dec(record["client_secret_enc"]),
             api_key=self._dec(record["api_key_enc"]),
+            owner_id=record.get("owner_id", ""),
             label=record.get("label", ""),
             network_console_id=record.get("network_console_id", ""),
             protect_console_id=record.get("protect_console_id", ""),
@@ -278,14 +291,17 @@ class TenantStore:
                 return self._to_tenant(record)
         return None
 
-    def list_tenants(self) -> list[dict[str, Any]]:
-        """Return non-secret metadata for every tenant (for an admin view)."""
+    def list_tenants(self, owner_id: str | None = None) -> list[dict[str, Any]]:
+        """Return non-secret metadata for tenants, optionally scoped to an owner."""
         out: list[dict[str, Any]] = []
         for record in self._data["tenants"].values():
+            if owner_id is not None and record.get("owner_id", "") != owner_id:
+                continue
             out.append(
                 {
                     "tenant_id": record["tenant_id"],
                     "client_id": record["client_id"],
+                    "owner_id": record.get("owner_id", ""),
                     "label": record.get("label", ""),
                     "network_console_id": record.get("network_console_id", ""),
                     "protect_console_id": record.get("protect_console_id", ""),
@@ -295,11 +311,19 @@ class TenantStore:
         out.sort(key=lambda r: r["created_at"], reverse=True)
         return out
 
-    async def delete_tenant(self, tenant_id: str) -> bool:
+    async def delete_tenant(self, tenant_id: str, owner_id: str | None = None) -> bool:
+        """Delete a tenant and revoke its OAuth tokens.
+
+        When ``owner_id`` is given, the tenant is only deleted if it belongs to
+        that owner (so users can only revoke their own connections).
+        """
         async with self._lock:
-            record = self._data["tenants"].pop(tenant_id, None)
+            record = self._data["tenants"].get(tenant_id)
             if record is None:
                 return False
+            if owner_id is not None and record.get("owner_id", "") != owner_id:
+                return False
+            self._data["tenants"].pop(tenant_id, None)
             # Drop any tokens/refresh tokens issued to this tenant's client.
             client_id = record["client_id"]
             for tok, rec in list(self._data["tokens"].items()):
