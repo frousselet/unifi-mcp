@@ -317,6 +317,163 @@ def format_network_radius_profiles(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# --- Pending devices & adoption ---
+
+
+def format_network_pending_devices(data: dict[str, Any]) -> str:
+    devices = data.get("data", [])
+    if not devices:
+        return "No devices pending adoption."
+
+    lines: list[str] = [f"Found {len(devices)} device(s) pending adoption:\n"]
+    for d in devices:
+        lines.append(f"- **{d.get('model', 'Unknown')}** [{d.get('state', 'N/A')}]")
+        lines.append(
+            f"  MAC: {d.get('macAddress', 'N/A')} | IP: {d.get('ipAddress', 'N/A')}"
+        )
+        lines.append(
+            f"  Firmware: {d.get('firmwareVersion', 'N/A')} | "
+            f"Supported: {d.get('supported', 'N/A')}"
+        )
+        features = d.get("features", [])
+        if features:
+            lines.append(f"  Features: {', '.join(features)}")
+        lines.append("")
+
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+# --- ACL rules ---
+
+
+def format_network_acl_rules(data: dict[str, Any]) -> str:
+    rules = data.get("data", [])
+    if not rules:
+        return "No ACL rules found."
+
+    lines: list[str] = [f"Found {len(rules)} ACL rule(s):\n"]
+    for r in rules:
+        name = r.get("name", "Unnamed")
+        lines.append(f"- **{name}** (ID: `{r.get('id', 'N/A')}`)")
+        lines.append(
+            f"  Type: {r.get('type', 'N/A')} | Action: {r.get('action', 'N/A')} | "
+            f"Enabled: {r.get('enabled', 'N/A')} | Index: {r.get('index', 'N/A')}"
+        )
+        lines.append("")
+
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+# --- Traffic matching lists ---
+
+
+def format_network_traffic_matching_lists(data: dict[str, Any]) -> str:
+    lists = data.get("data", [])
+    if not lists:
+        return "No traffic matching lists found."
+
+    lines: list[str] = [f"Found {len(lists)} traffic matching list(s):\n"]
+    for tml in lists:
+        name = tml.get("name", "Unnamed")
+        lines.append(f"- **{name}** (ID: `{tml.get('id', 'N/A')}`)")
+        lines.append(f"  Type: {tml.get('type', 'N/A')}")
+        lines.append("")
+
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+# --- Switching ---
+
+
+def _format_named_page(data: dict[str, Any], singular: str) -> str:
+    items = data.get("data", [])
+    if not items:
+        return f"No {singular}s found."
+
+    lines: list[str] = [f"Found {len(items)} {singular}(s):\n"]
+    for it in items:
+        name = it.get("name") or it.get("type", "Unnamed")
+        lines.append(f"- **{name}** (ID: `{it.get('id', 'N/A')}`)")
+        if it.get("type"):
+            lines.append(f"  Type: {it['type']}")
+        members = it.get("members")
+        if isinstance(members, list):
+            lines.append(f"  Members: {len(members)}")
+        lines.append("")
+
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+def format_network_lags(data: dict[str, Any]) -> str:
+    return _format_named_page(data, "LAG")
+
+
+def format_network_mc_lag_domains(data: dict[str, Any]) -> str:
+    return _format_named_page(data, "MC-LAG domain")
+
+
+def format_network_switch_stacks(data: dict[str, Any]) -> str:
+    return _format_named_page(data, "switch stack")
+
+
+# --- Supporting resources (tags, countries, DPI) ---
+
+
+def format_network_device_tags(data: dict[str, Any]) -> str:
+    tags = data.get("data", [])
+    if not tags:
+        return "No device tags found."
+
+    lines: list[str] = [f"Found {len(tags)} device tag(s):\n"]
+    for t in tags:
+        name = t.get("name", "Unnamed")
+        device_ids = t.get("deviceIds", [])
+        lines.append(f"- **{name}** (ID: `{t.get('id', 'N/A')}`)")
+        lines.append(f"  Devices: {len(device_ids)}")
+        lines.append("")
+
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+def format_network_countries(data: dict[str, Any]) -> str:
+    countries = data.get("data", [])
+    if not countries:
+        return "No countries found."
+
+    lines: list[str] = [f"Found {len(countries)} country(ies):\n"]
+    for c in countries:
+        lines.append(f"- {c.get('code', '??')}: {c.get('name', 'N/A')}")
+    lines.append("")
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+def format_network_dpi(data: dict[str, Any], singular: str) -> str:
+    items = data.get("data", [])
+    if not items:
+        return f"No DPI {singular}s found."
+
+    lines: list[str] = [f"Found {len(items)} DPI {singular}(s):\n"]
+    for it in items:
+        lines.append(f"- `{it.get('id', 'N/A')}`: {it.get('name', 'N/A')}")
+    lines.append("")
+    lines.append(_pagination_hint(data))
+    return "\n".join(lines)
+
+
+# --- Generic detail ---
+
+
+def format_network_detail(data: dict[str, Any]) -> str:
+    """Render any single Network resource as pretty JSON."""
+    return _json_detail(data)
+
+
 # --- CRUD / Action results ---
 
 

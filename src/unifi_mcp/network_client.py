@@ -19,36 +19,79 @@ class NetworkApiError(Exception):
 
 
 class NetworkClient:
-    """Async client for the UniFi Network API (local console).
+    """Async client for the UniFi Network integration API.
 
-    Connects to a UniFi console (UDM, UCG, etc.) via its local API
-    at https://<host>/proxy/network/integration/v1/.
+    Two connection modes are supported:
+
+    - **Local console**: set ``UNIFI_NETWORK_HOST`` (or pass ``host``). Requests
+      go to ``https://<host>/proxy/network/integration/v1/…`` with the local
+      console's self-signed certificate.
+    - **Cloud connector**: set ``UNIFI_NETWORK_CONSOLE_ID`` / ``UNIFI_CONSOLE_ID``
+      (or pass ``console_id``). Requests are proxied through
+      ``https://api.ui.com/v1/connector/consoles/<id>/proxy/network/integration/v1/…``
+      using a cloud API key created at unifi.ui.com. No local host needed.
+
+    Local mode takes precedence when both are configured.
     """
+
+    CLOUD_BASE = "https://api.ui.com"
+
+    @staticmethod
+    def is_configured() -> bool:
+        """Whether the environment enables the Network client (host or console id)."""
+        return bool(
+            os.environ.get("UNIFI_NETWORK_HOST")
+            or os.environ.get("UNIFI_NETWORK_CONSOLE_ID")
+            or os.environ.get("UNIFI_CONSOLE_ID")
+        )
 
     def __init__(
         self,
         host: str | None = None,
+        console_id: str | None = None,
         api_key: str | None = None,
         verify_ssl: bool | None = None,
         timeout: float | None = None,
     ):
         self.host = host or os.environ.get("UNIFI_NETWORK_HOST", "")
-        if not self.host:
+        self.console_id = (
+            console_id
+            or os.environ.get("UNIFI_NETWORK_CONSOLE_ID", "")
+            or os.environ.get("UNIFI_CONSOLE_ID", "")
+        )
+        if not self.host and not self.console_id:
             raise ValueError(
-                "UniFi Network host is required. Set UNIFI_NETWORK_HOST "
-                "environment variable or pass host parameter."
+                "UniFi Network requires either a local host or a cloud console ID. "
+                "Set UNIFI_NETWORK_HOST for a local console, or UNIFI_CONSOLE_ID "
+                "(with a cloud API key) to reach it through api.ui.com."
             )
-        self.api_key = api_key or os.environ.get("UNIFI_NETWORK_API_KEY", "") or os.environ.get("UNIFI_API_KEY", "")
+        self.api_key = (
+            api_key
+            or os.environ.get("UNIFI_NETWORK_API_KEY", "")
+            or os.environ.get("UNIFI_API_KEY", "")
+        )
         if not self.api_key:
             raise ValueError(
                 "UniFi API key is required. Set UNIFI_NETWORK_API_KEY "
                 "or UNIFI_API_KEY environment variable, or pass api_key parameter."
             )
-        if verify_ssl is None:
-            verify_ssl = os.environ.get("UNIFI_NETWORK_VERIFY_SSL", "false").lower() == "true"
         resolved_timeout = timeout or float(os.environ.get("UNIFI_API_TIMEOUT", "30"))
 
-        base_url = f"https://{self.host}/proxy/network/integration"
+        if self.host:
+            base_url = f"https://{self.host}/proxy/network/integration"
+            if verify_ssl is None:
+                verify_ssl = (
+                    os.environ.get("UNIFI_NETWORK_VERIFY_SSL", "false").lower()
+                    == "true"
+                )
+        else:
+            base_url = (
+                f"{self.CLOUD_BASE}/v1/connector/consoles/"
+                f"{self.console_id}/proxy/network/integration"
+            )
+            # api.ui.com has a valid public certificate.
+            verify_ssl = True
+
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={
@@ -339,4 +382,285 @@ class NetworkClient:
         return await self._get(
             f"/v1/sites/{site_id}/radius/profiles",
             params=self._pagination_params(offset, limit),
+        )
+
+    # --- Pending devices & adoption ---
+
+    async def list_pending_devices(
+        self, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/v1/pending-devices",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def adopt_device(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(f"/v1/sites/{site_id}/devices", json_body=data)
+
+    async def remove_device(
+        self, site_id: str, device_id: str
+    ) -> dict[str, Any]:
+        return await self._delete(f"/v1/sites/{site_id}/devices/{device_id}")
+
+    async def execute_port_action(
+        self, site_id: str, device_id: str, port_idx: int, action: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(
+            f"/v1/sites/{site_id}/devices/{device_id}/interfaces/ports/{port_idx}/actions",
+            json_body=action,
+        )
+
+    # --- Network references ---
+
+    async def get_network_references(
+        self, site_id: str, network_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/networks/{network_id}/references"
+        )
+
+    # --- ACL rules ---
+
+    async def list_acl_rules(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/acl-rules",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def get_acl_rule(self, site_id: str, acl_rule_id: str) -> dict[str, Any]:
+        return await self._get(f"/v1/sites/{site_id}/acl-rules/{acl_rule_id}")
+
+    async def create_acl_rule(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(f"/v1/sites/{site_id}/acl-rules", json_body=data)
+
+    async def update_acl_rule(
+        self, site_id: str, acl_rule_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/acl-rules/{acl_rule_id}", json_body=data
+        )
+
+    async def delete_acl_rule(
+        self, site_id: str, acl_rule_id: str
+    ) -> dict[str, Any]:
+        return await self._delete(f"/v1/sites/{site_id}/acl-rules/{acl_rule_id}")
+
+    async def get_acl_rule_ordering(self, site_id: str) -> dict[str, Any]:
+        return await self._get(f"/v1/sites/{site_id}/acl-rules/ordering")
+
+    async def update_acl_rule_ordering(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/acl-rules/ordering", json_body=data
+        )
+
+    # --- DNS policy CRUD (list defined above) ---
+
+    async def get_dns_policy(
+        self, site_id: str, dns_policy_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/dns/policies/{dns_policy_id}"
+        )
+
+    async def create_dns_policy(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(
+            f"/v1/sites/{site_id}/dns/policies", json_body=data
+        )
+
+    async def update_dns_policy(
+        self, site_id: str, dns_policy_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/dns/policies/{dns_policy_id}", json_body=data
+        )
+
+    async def delete_dns_policy(
+        self, site_id: str, dns_policy_id: str
+    ) -> dict[str, Any]:
+        return await self._delete(
+            f"/v1/sites/{site_id}/dns/policies/{dns_policy_id}"
+        )
+
+    # --- Firewall zones CRUD & policy ordering ---
+
+    async def get_firewall_zone(
+        self, site_id: str, firewall_zone_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/firewall/zones/{firewall_zone_id}"
+        )
+
+    async def create_firewall_zone(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(
+            f"/v1/sites/{site_id}/firewall/zones", json_body=data
+        )
+
+    async def update_firewall_zone(
+        self, site_id: str, firewall_zone_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/firewall/zones/{firewall_zone_id}", json_body=data
+        )
+
+    async def delete_firewall_zone(
+        self, site_id: str, firewall_zone_id: str
+    ) -> dict[str, Any]:
+        return await self._delete(
+            f"/v1/sites/{site_id}/firewall/zones/{firewall_zone_id}"
+        )
+
+    async def get_firewall_policy(
+        self, site_id: str, policy_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/firewall/policies/{policy_id}"
+        )
+
+    async def get_firewall_policy_ordering(
+        self, site_id: str, source_zone_id: str, destination_zone_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/firewall/policies/ordering",
+            params={
+                "sourceFirewallZoneId": source_zone_id,
+                "destinationFirewallZoneId": destination_zone_id,
+            },
+        )
+
+    async def update_firewall_policy_ordering(
+        self,
+        site_id: str,
+        source_zone_id: str,
+        destination_zone_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/firewall/policies/ordering?"
+            f"sourceFirewallZoneId={source_zone_id}&"
+            f"destinationFirewallZoneId={destination_zone_id}",
+            json_body=data,
+        )
+
+    # --- Traffic matching lists ---
+
+    async def list_traffic_matching_lists(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/traffic-matching-lists",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def get_traffic_matching_list(
+        self, site_id: str, list_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/traffic-matching-lists/{list_id}"
+        )
+
+    async def create_traffic_matching_list(
+        self, site_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(
+            f"/v1/sites/{site_id}/traffic-matching-lists", json_body=data
+        )
+
+    async def update_traffic_matching_list(
+        self, site_id: str, list_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._put(
+            f"/v1/sites/{site_id}/traffic-matching-lists/{list_id}", json_body=data
+        )
+
+    async def delete_traffic_matching_list(
+        self, site_id: str, list_id: str
+    ) -> dict[str, Any]:
+        return await self._delete(
+            f"/v1/sites/{site_id}/traffic-matching-lists/{list_id}"
+        )
+
+    # --- Switching (LAGs, MC-LAG domains, switch stacks) ---
+
+    async def list_lags(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/switching/lags",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def get_lag(self, site_id: str, lag_id: str) -> dict[str, Any]:
+        return await self._get(f"/v1/sites/{site_id}/switching/lags/{lag_id}")
+
+    async def list_mc_lag_domains(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/switching/mc-lag-domains",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def get_mc_lag_domain(
+        self, site_id: str, mc_lag_domain_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/switching/mc-lag-domains/{mc_lag_domain_id}"
+        )
+
+    async def list_switch_stacks(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/switching/switch-stacks",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def get_switch_stack(
+        self, site_id: str, switch_stack_id: str
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/switching/switch-stacks/{switch_stack_id}"
+        )
+
+    # --- Supporting resources (site-scoped & global) ---
+
+    async def list_device_tags(
+        self, site_id: str, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            f"/v1/sites/{site_id}/device-tags",
+            params=self._pagination_params(offset, limit),
+        )
+
+    async def list_countries(
+        self, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/v1/countries", params=self._pagination_params(offset, limit)
+        )
+
+    async def list_dpi_applications(
+        self, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/v1/dpi/applications", params=self._pagination_params(offset, limit)
+        )
+
+    async def list_dpi_categories(
+        self, offset: int = 0, limit: int = 25
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/v1/dpi/categories", params=self._pagination_params(offset, limit)
         )

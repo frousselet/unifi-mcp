@@ -1,43 +1,61 @@
+# UniFi MCP.
+#
+# Default service = the multi-user web GUI. `docker compose up` needs NO config:
+#   - the encryption key is generated and persisted on the data volume,
+#   - the public URL is auto-detected from each request.
+# Users self-register (passkeys) at http://<host>:${MCP_PORT}/ and create their
+# own MCP connections. Put an HTTPS reverse proxy in front for public use
+# (passkeys require HTTPS except on localhost).
+#
+# Optional single-tenant / stdio modes are behind profiles (see below).
+
 services:
-  # stdio transport (default) — for direct use with Claude Desktop/Code
+  # Multi-user onboarding + OAuth-protected MCP (default).
   unifi-mcp:
     build: .
+    entrypoint: ["unifi-mcp-web"]
     environment:
-      - UNIFI_API_KEY=${UNIFI_API_KEY}
-      - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
-      - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
-      - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
-      - UNIFI_PROTECT_HOST=${UNIFI_PROTECT_HOST:-}
-      - UNIFI_PROTECT_API_KEY=${UNIFI_PROTECT_API_KEY:-}
-      - UNIFI_PROTECT_VERIFY_SSL=${UNIFI_PROTECT_VERIFY_SSL:-false}
-    stdin_open: true
-
-  # SSE transport — for use with mcp-remote
-  # unifi-mcp-sse:
-  #   build: .
-  #   command: ["--transport", "sse"]
-  #   environment:
-  #     - UNIFI_API_KEY=${UNIFI_API_KEY}
-  #     - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
-  #     - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
-  #     - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
-  #     - UNIFI_PROTECT_HOST=${UNIFI_PROTECT_HOST:-}
-  #     - UNIFI_PROTECT_API_KEY=${UNIFI_PROTECT_API_KEY:-}
-  #     - UNIFI_PROTECT_VERIFY_SSL=${UNIFI_PROTECT_VERIFY_SSL:-false}
-  #   ports:
-  #     - "${MCP_PORT:-8000}:8000"
-
-  # Streamable HTTP transport — modern alternative to SSE
-  unifi-mcp-http:
-    build: .
-    command: ["--transport", "streamable-http"]
-    environment:
-      - UNIFI_API_KEY=${UNIFI_API_KEY}
-      - UNIFI_NETWORK_HOST=${UNIFI_NETWORK_HOST:-}
-      - UNIFI_NETWORK_API_KEY=${UNIFI_NETWORK_API_KEY:-}
-      - UNIFI_NETWORK_VERIFY_SSL=${UNIFI_NETWORK_VERIFY_SSL:-false}
-      - UNIFI_PROTECT_HOST=${UNIFI_PROTECT_HOST:-}
-      - UNIFI_PROTECT_API_KEY=${UNIFI_PROTECT_API_KEY:-}
-      - UNIFI_PROTECT_VERIFY_SSL=${UNIFI_PROTECT_VERIFY_SSL:-false}
+      # All optional. Recommended in production: set UNIFI_PUBLIC_URL to the
+      # public https origin so OAuth 401 hints match exactly.
+      UNIFI_PUBLIC_URL: ${UNIFI_PUBLIC_URL:-}
+      UNIFI_SECRET_KEY: ${UNIFI_SECRET_KEY:-}
+      UNIFI_RP_NAME: ${UNIFI_RP_NAME:-UniFi MCP}
+      UNIFI_ONBOARD_CODE: ${UNIFI_ONBOARD_CODE:-}
+      UNIFI_OAUTH_REDIRECT_URIS: ${UNIFI_OAUTH_REDIRECT_URIS:-}
+      UNIFI_API_TIMEOUT: ${UNIFI_API_TIMEOUT:-30}
     ports:
       - "${MCP_PORT:-8000}:8000"
+    volumes:
+      - unifi-data:/data
+    restart: unless-stopped
+
+  # Single-tenant server (credentials from env). Opt-in.
+  #   docker compose --profile single up
+  unifi-mcp-single:
+    build: .
+    command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
+      UNIFI_API_TIMEOUT: ${UNIFI_API_TIMEOUT:-30}
+      UNIFI_CONSOLE_ID: ${UNIFI_CONSOLE_ID:-}
+      UNIFI_NETWORK_HOST: ${UNIFI_NETWORK_HOST:-}
+      UNIFI_PROTECT_HOST: ${UNIFI_PROTECT_HOST:-}
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    restart: unless-stopped
+    profiles: ["single"]
+
+  # Single-tenant over stdio (Claude Desktop/Code spawning it directly). Opt-in.
+  #   docker compose run --rm unifi-mcp-stdio
+  unifi-mcp-stdio:
+    build: .
+    environment:
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
+      UNIFI_CONSOLE_ID: ${UNIFI_CONSOLE_ID:-}
+      UNIFI_NETWORK_HOST: ${UNIFI_NETWORK_HOST:-}
+      UNIFI_PROTECT_HOST: ${UNIFI_PROTECT_HOST:-}
+    stdin_open: true
+    profiles: ["stdio"]
+
+volumes:
+  unifi-data:
